@@ -1,0 +1,39 @@
+TELL (V) -> (Z) 0.79
+TELL (V & M) 0.6
+ASK (Z)
+RETRACT (V) -> (Z)
+ASK (Z)
+TELL (V) -> (Z) 0.98
+ASK (Z)
+TELL (K) -> (H) 0.77
+TELL (P | K) 0.81
+ASK (H)
+TELL (Y & A) -> (U) 0.74
+TELL (Y & A) 0.86
+TELL (U) -> (W) 0.89
+ASK (W)
+RETRACT (Y & A) -> (U)
+ASK (W)
+ASK (Y)
+TELL (C) -> (T) 0.81
+TELL (C) 0.77
+TELL (O | L) 0.59
+TELL (O | L) -> (T) 0.54
+ASK (T)
+RETRACT (C) -> (T)
+ASK (T)
+TELL (G) -> (S & J) 0.84
+TELL (J) -> (F) 0.77
+TELL (G) 0.64
+ASK (F)
+RETRACT (G)
+ASK (F)
+TELL (X) 1.0
+TELL (N) -> (B) 0.82
+TELL (B) -> (D) 0.7
+TELL (X) -> (I) 0.71
+ASK (X & I)
+ASK (I | B)
+ASK (I & B)
+ASK (N) -> (D)
+DONE
