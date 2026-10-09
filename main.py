@@ -1,6 +1,6 @@
 import client
 from Fact import KnowledgeBase, Fact
-
+LOCAL_TESTING = True
 UnityId = 'bdevine2'
 Seed = 'ThETruTHISouTtHERe'
 
@@ -11,7 +11,8 @@ Seed = 'ThETruTHISouTtHERe'
 
 
 def handle_statement(kbase, statement):
-    fact = Fact(statement)
+    print(f'Incoming statement: {statement}')
+    fact = Fact(statement, kbase)
     act(kbase, fact)
 
 
@@ -33,8 +34,12 @@ def act(kbase, fact):
 stuff = ''
 kb = KnowledgeBase()
 reset = True
+test_file = open("samplefile.txt", "r")
 while stuff != 'DONE':
-    stuff = client.next_statement(UnityId, Seed, reset=reset)
+    if LOCAL_TESTING:
+        stuff = test_file.readline().strip()
+    else:
+        stuff = client.next_statement(UnityId, Seed, reset=reset)
     # print(f'Raw: {stuff}')
     reset = False
     handle_statement(kb, stuff)
