@@ -20,7 +20,7 @@ class Fact:
         self.Knowledge = " ".join(parts[1:-1] if self.Action == 'TELL' else parts[1:])
         self.Weight = decimal.Decimal(parts[-1]) if self.Action == 'TELL' else 0.0
         if not already_cnf:
-            self.Knowledge = self.convert_to_cnf(self.Knowledge, kbase, self.Weight) # TODO need to keep ground truth? and in other facts spawned
+            self.Knowledge = self.convert_to_cnf(kbase)  # TODO need to keep ground truth? and in other facts spawned
         self.Justifications = []  # parent keys that imply this truth
         self.Assumptions = []  # child keys implied by this
 
@@ -47,13 +47,13 @@ class Fact:
             else:  # must be a truth constant, con/dis junction of some sort
                 return {self.Knowledge: kb.ask_string(self.Knowledge)}
 
-    def convert_to_cnf(self, knowledge, kbase, weight):
+    def convert_to_cnf(self, kbase):
         # eliminate implications
         # move nots in
         # standardize/skolemize
         # distribute or over and
-        cnf_knowledge = knowledge
-
+        cnf_knowledge = self.Knowledge
+        newer_facts = []
         if Implies in cnf_knowledge:
             cnf_knowledge = self.elim_implications(cnf_knowledge)
         if Not in cnf_knowledge:
@@ -61,7 +61,7 @@ class Fact:
             cnf_knowledge = self.move_not_in(cnf_knowledge)
         if And in cnf_knowledge and Or in cnf_knowledge:
             # special case, or over and, and over or
-            print(f'SPECIAL case :{cnf_knowledge}')
+            # print(f'SPECIAL case :{cnf_knowledge}')
             expr = self.clean_expression(cnf_knowledge)
 
             # top or depth
@@ -111,9 +111,13 @@ class Fact:
             # only want the variable
             parts = [self.clean_expression(p) for p in parts]
 
+            fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
+            resolved, n_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+
+            if resolved:
+                newer_facts.extend(n_facts)
             # need to sneak add the extra literal here
-            # need to sneak add the extra literal here
-            kbase.tell(Fact(f"TELL {parts[0]} {weight}", kbase, True))
+            kbase.tell(fact)
 
             # Return the second part
             cnf_knowledge = parts[1]
@@ -129,29 +133,110 @@ class Fact:
             # only want the variable
             parts = [self.clean_expression(p) for p in parts]
 
+            fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
+            resolved, n_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+
+            if resolved:
+                newer_facts.extend(n_facts)
             # need to sneak add the extra literal here
-            kbase.tell(Fact(f"TELL {parts[0]} {weight}", kbase, True))
+            kbase.tell(fact)
 
             # Return the second part
             cnf_knowledge = parts[1]
+
+        if len(newer_facts) > 0:
+            kbase.insert_and_resolve_new_facts(newer_facts)
+
         cnf_knowledge = self.clean_expression(cnf_knowledge)
         # print(f'Cleaned: {cnf_knowledge}')
         return cnf_knowledge
 
-    def elim_implications(self, knowledge):
+    @staticmethod
+    def raw_cnf(cnf_knowledge):
+        # eliminate implications
+        # move nots in
+        # standardize/skolemize
+        # distribute or over and
+        return_knowledge = [cnf_knowledge] # start out like this because 1 literal
+        if Implies in cnf_knowledge:
+            cnf_knowledge = Fact.elim_implications(cnf_knowledge)
+            return_knowledge = [cnf_knowledge]
+        if Not in cnf_knowledge:
+            # if we had an implication then we will have 1 not we have to move in
+            cnf_knowledge = Fact.move_not_in(cnf_knowledge)
+            return_knowledge = [cnf_knowledge]
+        if And in cnf_knowledge and Or in cnf_knowledge:
+            # special case, or over and, and over or
+            expr = Fact.clean_expression(cnf_knowledge)
+            # top or depth
+            depth = 0
+            or_index = -1
+            for i, char in enumerate(expr):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif char == Or and depth == 0:
+                    or_index = i
+                    break
+            if or_index != -1:
+                left = expr[:or_index].strip()
+                right = expr[or_index + 1:].strip()
+                # A | (B & C)
+                if right.startswith("(") and Fact.matching_parens(right, 0) == len(right) - 1:
+                    inside = right[1:-1]
+                    if And in inside:
+                        b, c = inside.split(And, 1)
+                        cnf_knowledge = (
+                            f"({left}{Or}{b.strip()})"
+                            f"{And}"
+                            f"({left}{Or}{c.strip()})"
+                        )
+                # (A & B) | C
+                elif left.startswith("(") and Fact.matching_parens(left, 0) == len(left) - 1:
+                    inside = left[1:-1]
+
+                    if And in inside:
+                        a, b = inside.split(And, 1)
+                        cnf_knowledge = (
+                            f"({a.strip()}{Or}{right})"
+                            f"{And}"
+                            f"({b.strip()}{Or}{right})"
+                        )
+            # will return one and add the other directly to the kb via tell clean outer ( ) first here
+            parts = Fact.clean_expression(cnf_knowledge).split(And)
+            # only want the variable
+            parts = [Fact.clean_expression(p) for p in parts]
+            # Return the second part
+            return_knowledge = parts
+        elif And in cnf_knowledge and not Fact.operators_at_different_levels(cnf_knowledge):
+            parts = Fact.clean_expression(cnf_knowledge).split(And)
+            # only want the variable
+            parts = [Fact.clean_expression(p) for p in parts]
+            return_knowledge = parts
+
+        cnf_knowledge = [
+            Fact.clean_expression(part)
+            for part in return_knowledge
+        ]
+        return cnf_knowledge
+
+    @staticmethod
+    def elim_implications(knowledge):
         left, right = knowledge.split(Implies)
         # not a V b in the form (V) -> (Z) where V could be (Y & A) or Z could be (O | L)
         # do step 1 and eliminate implications
         return f"({Not}{left.strip()} {Or} {right.strip()})"  # add parens we will strip later
 
-    def move_not_in(self, knowledge):
+    @staticmethod
+    def move_not_in(knowledge):
         # print("START: Move NOT in:", knowledge)
         output = ''
         found_not = False
         for i, char in enumerate(knowledge):
             if char == Not:
                 if i + 1 < len(knowledge) and knowledge[i + 1] == "(":
-                    end = self.matching_parens(knowledge, i + 1)
+                    end = Fact.matching_parens(knowledge, i + 1)
                     inside = knowledge[i + 2:end]
 
                     # we could have single literal, or conjunctions or disjunctions
@@ -173,25 +258,21 @@ class Fact:
                     else:
                         # just add the not
                         output += Not
-
-
             else:
-                output += char  #rebuild string as we go
-       # print("END: Move NOT in:", output)
+                output += char  # rebuild string as we go
         return output
 
-    def clean_expression(self, knowledge):
-        knowledge = knowledge.replace(" ", "")
 
+    @staticmethod
+    def clean_expression(knowledge):
+        knowledge = knowledge.replace(" ", "")
         # do this first ~(G) -> ~G
         knowledge = re.sub(r'~\(([A-Z])\)', r'~\1', knowledge)
-
         # now this, its extra work but clean (G) -> G
         knowledge = re.sub(r'(?<!~)\(([A-Z])\)', r'\1', knowledge)
-
         # remove ( ..... ) from outside
         if knowledge.startswith("(") and knowledge.endswith(")"):
-            if self.matching_parens(knowledge, 0) == len(knowledge) - 1:
+            if Fact.matching_parens(knowledge, 0) == len(knowledge) - 1:
                 knowledge = knowledge[1:-1]
 
         return knowledge
@@ -243,45 +324,54 @@ class KnowledgeBase:
         self.Literals = {}  # potential dict used if in TIME mode to save lookup time
         self.Mode = mode
 
-    def insert_and_resolve_newfacts(self, new_facts):
+    def insert_and_resolve_new_facts(self, new_facts):
         newer_facts = []
         for fact in new_facts:
-            self.tell(fact)
-
-            print(f'New fact {fact}')
             resolved, n_facts = self.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
             if resolved:
                 newer_facts.extend(n_facts)
 
+            self.tell(fact)
+            # print(f'New fact {fact}')
+
         if len(newer_facts) > 0:
-            self.insert_and_resolve_newfacts(newer_facts)
+            self.insert_and_resolve_new_facts(newer_facts)
 
     def perform_resolution(self, clause, literals_to_resolve: list, weight: decimal):
         resolutions_found = False
         new_facts = {}
-        if len(self.Facts) <= 1:
+        if len(self.Facts) < 1:
             return resolutions_found, []  # one fact nothing to resolve
         # start with fact 1 and forward chain
         # grab a literal and select all inverse facts
-        # IF you find something that negates a fact with only 1 inverse literal we have hit incompleteness
 
         for literal in literals_to_resolve:
             resolutions_found = True
             # find opposites
             token = self.negate(literal)
-           # print(f'Token to resolve: {token} for literal: {literal}')
+            # print(f'Token to resolve: {token} for literal: {literal}')
             # get the list of linked truths
             # create a list we can use as we resolve this literal
-            facts_with_literal_opposite = self.Literals.get(token, [])
-        #    print(f'Facts that have token: {facts_with_literal_opposite}')
+            facts_with_literal_opposite = self.Literals.get(token, []) if self.Mode == "TIME" else []  # TODO if doing MEM ever
+            #    print(f'Facts that have token: {facts_with_literal_opposite}')
             for fact in facts_with_literal_opposite:
-                # remove negated literal and dangling operator
-             #   print(f'merging fact: {fact} with incoming expression {clause}')
+                # weight for the newest object we are calling resolve with
+                # also passing its clause and literals in the clause to resolve against
+
+                fact_object = self.Facts.get(fact)
+                # fact_obj is the other fact we can resolve with since we have opposing literals
+                # 3 algorithms should be considered
+                # book: min/max
+                # just because: avg
+                # complex based on fuzzy logic which will probably be just min for | TODO or is this the same as #1?
+                #  If complex is the same as 1 do something where you weight how many records they are a part of
+                new_fact_weight = (fact_object.Weight + weight) / 2  # for now avg
+
                 new_fact = self.merge_expressions(re.findall(r'~?[A-Z]', clause), literal, re.findall(r'~?[A-Z]', fact))
-              #  print(f'New fact: {new_fact}')
+                # print(f'New fact: {new_fact}')
                 if new_fact:
-                    new_facts[new_fact] = Fact(f"TELL {new_fact} {weight}", self, True)
-              #      print(f'New fact added during resolution: {new_fact} weight: {weight}')
+                    new_facts[new_fact] = Fact(f"TELL {new_fact} {new_fact_weight}", self, True)
+                    # print(f'New fact added during resolution: {new_fact} weight: {weight}')
         return resolutions_found, list(new_facts.values())
 # two modes mem, time second dict by literal
 # add second on tell for all the literals
@@ -292,9 +382,9 @@ class KnowledgeBase:
 
     @staticmethod
     def merge_expressions(expression1_literals: list, literal, expression2_literals: list):
-    #    print(f'Expression 1 {expression1_literals} Expression 2 {expression2_literals} - Joining literal negation: {literal} ')
+        # print(f'Expression 1 {expression1_literals} Expression 2 {expression2_literals} - Joining literal negation: {literal} ')
         neg_literal = KnowledgeBase.negate(literal)
-    #    print(f'Negative literal: {neg_literal}')
+        # print(f'Negative literal: {neg_literal}')
         if literal not in expression1_literals or neg_literal not in expression2_literals:
             return None
 
@@ -316,7 +406,7 @@ class KnowledgeBase:
 
         #TODO is this ok to be empty here?
         if len(remaining) == 0:
-            print('Empty')
+            Fact.print_error('Empty')
         return "|".join(remaining)
 
     def tell(self, fact):
@@ -332,30 +422,57 @@ class KnowledgeBase:
             for literal in literals:
                 items = self.Literals.setdefault(literal, [])  # get existing list if exists or a blank one
                 if fact.Knowledge not in items:
-                    items.extend(fact.Knowledge)  # not already in so add it to the list
-        print(f'ADDED: {fact}')
-        # we need to infer and tell anything we can from this fact
-        # if not fact.ground_truth():
-        #     # we do have parts to work with
-        #     # they will have their current known weights that have been deduced as needed and can be used to update
-        #     # any other changing values
-        #     variables_from_knowledge = fact.deconstructed_variables(self)
-        #     for v in variables_from_knowledge:
-        #         newfact = Fact(f'TELL {v} {variables_from_knowledge[v]}', self)
-        #         newfact.Justifications.append(fact.Knowledge)
-        #         if fact.is_implication():
-        #             fact.Assumptions.append(newfact.Knowledge)
-        #         self.tell(newfact)  #dummy action that will never be called but for the unelegant split I am using
+                    items.append(fact.Knowledge)  # not already in so add it to the list
 
     def ask(self, fact):
         # print(f'ASK - {fact}')
         return self.ask_string(fact.Knowledge)
 
-    def ask_string(self, knowledge):
+    @staticmethod
+    def is_literal_only(check_string):
+        return re.fullmatch(r"[A-Z]", check_string)
 
+    def ask_string(self, knowledge):
+        cnf_s = Fact.raw_cnf(knowledge)
         #todo Ask could be complicated like ASK (A) -> (Q)
         #todo Need a because method that trails back and says where I came from, which could loop on collections of inferences
-        return self.Facts[knowledge].Weight if self.Facts.get(knowledge) else 0.0
+
+        # need to evaluate if I am in some OR I can deduce something if I do not have a direct weight!
+        # if there are more than one clause then self.anded
+        for know in cnf_s:
+            not_know = None
+            if self.is_literal_only(know):
+                # this is a single literal checking inverse is simple
+                not_know = KnowledgeBase.negate(know)
+            if self.Facts.get(know):
+                return self.Facts[know].Weight  # DIRECTLY known
+            elif not_know and self.Facts.get(not_know):
+                return 1 - self.Facts[not_know].Weight  # INDIRECTLY known
+            else:
+                if not_know:
+                    # we are a literal
+                    lits = self.Literals.get(know)
+                    if lits:
+                        values = []
+                        for literal in lits:
+                            if self.Facts.get(literal):
+                                values.append(self.Facts[literal].Weight)
+
+                        return min(values)  # because its anded clauses so return min as value since we did not find ground truth
+                    elif not_know:
+                        # try the NOT 1 - weight value for single literal
+                        un_lits = self.Literals.get(know)
+                        if un_lits:
+                            values = []
+                            for literal in un_lits:
+                                if self.Facts.get(literal):
+                                    values.append(self.Facts[literal].Weight)
+
+                            return 1 - min(values)  # because its anded clauses so return min as value since we did not find ground truth
+                else:
+                    # break it apart and use correct weight function to resolve
+                    # TODO weight function
+                    return 0.0  # for now cannot determine!
 
     def retract(self, fact):
         # recursive? retracting can crawl around children to see if any retract, if none then return
@@ -371,16 +488,15 @@ class KnowledgeBase:
                 print(f'Retracting fact for {fact.Knowledge} is {existing_fact}')
 
             del self.Facts[fact.Knowledge]
+            if self.is_literal_only(fact.Knowledge):
+                del self.Literals[fact.Knowledge]  # I am the core truth I must be removed and cascade uncertainty
+
+
             # cascade retractions
             for a in existing_fact.Assumptions:
                 self.retract(self.Facts[a])
         else:
             print(f'{existing_fact} was not retracted because it was justified by {existing_fact.Justifications}')
-
-
-    def re_evaluate(self, fact):
-        #
-        l = 6
 
     def anded(self, p, q):
         return min(p, q)
