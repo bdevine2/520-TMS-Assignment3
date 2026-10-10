@@ -13,13 +13,14 @@ class Fact:
     • RETRACT <S>
     • ASK <S>
     """
-    def __init__(self, statement, kbase):
+    def __init__(self, statement, kbase, already_cnf=False):
         # First position action, last is weight if it has weight
         parts = [part.strip() for part in statement.split()]
         self.Action = parts[0]
         self.Knowledge = " ".join(parts[1:-1] if self.Action == 'TELL' else parts[1:])
         self.Weight = decimal.Decimal(parts[-1]) if self.Action == 'TELL' else 0.0
-        self.Knowledge = self.convert_to_cnf(self.Knowledge, kbase, self.Weight) # TODO need to keep ground truth? and in other facts spawned
+        if not already_cnf:
+            self.Knowledge = self.convert_to_cnf(self.Knowledge, kbase, self.Weight) # TODO need to keep ground truth? and in other facts spawned
         self.Justifications = []  # parent keys that imply this truth
         self.Assumptions = []  # child keys implied by this
 
@@ -61,14 +62,9 @@ class Fact:
         if And in cnf_knowledge and Or in cnf_knowledge:
             # special case, or over and, and over or
             print(f'SPECIAL case :{cnf_knowledge}')
-
-            # Distribute OR over AND to produce CNF
-            # Handles: A | (B & C)
-            #      and: (A & B) | C
-
             expr = self.clean_expression(cnf_knowledge)
 
-            # Find a top-level OR
+            # top or depth
             depth = 0
             or_index = -1
 
@@ -85,7 +81,7 @@ class Fact:
                 left = expr[:or_index].strip()
                 right = expr[or_index + 1:].strip()
 
-                # Case 1: A | (B & C)
+                # A | (B & C)
                 if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
                     inside = right[1:-1]
 
@@ -97,7 +93,7 @@ class Fact:
                             f"({left}{Or}{c.strip()})"
                         )
 
-                # Case 2: (A & B) | C
+                # (A & B) | C
                 elif left.startswith("(") and self.matching_parens(left, 0) == len(left) - 1:
                     inside = left[1:-1]
 
@@ -116,47 +112,12 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             # need to sneak add the extra literal here
-            for part in parts[1:]:
-                kbase.tell(Fact(f"TELL {part} {weight}", kbase))
+            # need to sneak add the extra literal here
+            kbase.tell(Fact(f"TELL {parts[0]} {weight}", kbase, True))
 
-            # Return the first part
-            cnf_knowledge = parts[0]
-            # andParts = cnf_knowledge.split(And, 1)
-            # orParts = cnf_knowledge.split(Or, 1)
-            # if any(Or in part for part in andParts):
-            #     for part in andParts:
-            #         if Or not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
-            #             continue
-            #         # (A & (b | C)) something like this = (a & b) | (a & c)
-            #
-            #         left, right = part.split(Or, 1)
-            #         left = left.strip()
-            #         right = right.strip()
-            #         if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
-            #             inside = right[1:-1]
-            #             if And in inside:
-            #                 left = left
-            #                 b, c = inside.split(And, 1)
-            #                 cnf_knowledge = f"({left}{Or}{b.strip()}){And}({left}{Or}{c.strip()})"
-            # elif any(And in part for part in orParts):
-            #     # (A | (b & c)) = (a | b) & (a | c) splits into two facts
-            #     for part in orParts:
-            #         if And not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
-            #             continue
-            #         # (A & (b | C)) something like this = (a & b) | (a & c)
-            #
-            #         left, right = part.split(And, 1)
-            #         left = left.strip()
-            #         right = right.strip()
-            #         if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
-            #             inside = right[1:-1]
-            #             if Or in inside:
-            #                 left = left
-            #                 b, c = inside.split(And, 1)
-            #                 cnf_knowledge = f"({left}{And}{b.strip()}){Or}({left}{And}{c.strip()})"
-            # else:
-            #     #failure
-            #     self.print_error('BROKEN Special case')
+            # Return the second part
+            cnf_knowledge = parts[1]
+
 
         elif And in cnf_knowledge and not self.operators_at_different_levels(cnf_knowledge):
             # a & b or a & b & c & d..
@@ -169,11 +130,10 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             # need to sneak add the extra literal here
-            for part in parts[1:]:
-                kbase.tell(Fact(f"TELL {part} {weight}", kbase))
+            kbase.tell(Fact(f"TELL {parts[0]} {weight}", kbase, True))
 
-            # Return the first part
-            cnf_knowledge = parts[0]
+            # Return the second part
+            cnf_knowledge = parts[1]
         cnf_knowledge = self.clean_expression(cnf_knowledge)
         # print(f'Cleaned: {cnf_knowledge}')
         return cnf_knowledge
@@ -223,8 +183,11 @@ class Fact:
     def clean_expression(self, knowledge):
         knowledge = knowledge.replace(" ", "")
 
-        # remove (V) >> V
-        knowledge = re.sub(r'\(([A-Z])\)', r'\1', knowledge)
+        # do this first ~(G) -> ~G
+        knowledge = re.sub(r'~\(([A-Z])\)', r'~\1', knowledge)
+
+        # now this, its extra work but clean (G) -> G
+        knowledge = re.sub(r'(?<!~)\(([A-Z])\)', r'\1', knowledge)
 
         # remove ( ..... ) from outside
         if knowledge.startswith("(") and knowledge.endswith(")"):
@@ -280,30 +243,46 @@ class KnowledgeBase:
         self.Literals = {}  # potential dict used if in TIME mode to save lookup time
         self.Mode = mode
 
+    def insert_and_resolve_newfacts(self, new_facts):
+        newer_facts = []
+        for fact in new_facts:
+            self.tell(fact)
+
+            print(f'New fact {fact}')
+            resolved, n_facts = self.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+            if resolved:
+                newer_facts.extend(n_facts)
+
+        if len(newer_facts) > 0:
+            self.insert_and_resolve_newfacts(newer_facts)
+
     def perform_resolution(self, clause, literals_to_resolve: list, weight: decimal):
         resolutions_found = False
         new_facts = {}
         if len(self.Facts) <= 1:
-            return resolutions_found  # one fact nothing to resolve
+            return resolutions_found, []  # one fact nothing to resolve
         # start with fact 1 and forward chain
         # grab a literal and select all inverse facts
         # IF you find something that negates a fact with only 1 inverse literal we have hit incompleteness
 
         for literal in literals_to_resolve:
+            resolutions_found = True
             # find opposites
             token = self.negate(literal)
-            print(f'Token to resolve: {token} for literal: {literal}')
+           # print(f'Token to resolve: {token} for literal: {literal}')
             # get the list of linked truths
             # create a list we can use as we resolve this literal
             facts_with_literal_opposite = self.Literals.get(token, [])
-            print(f'Facts that have token: {facts_with_literal_opposite}')
+        #    print(f'Facts that have token: {facts_with_literal_opposite}')
             for fact in facts_with_literal_opposite:
                 # remove negated literal and dangling operator
-                new_fact = self.merge_expressions(clause, token, fact)
+             #   print(f'merging fact: {fact} with incoming expression {clause}')
+                new_fact = self.merge_expressions(re.findall(r'~?[A-Z]', clause), literal, re.findall(r'~?[A-Z]', fact))
+              #  print(f'New fact: {new_fact}')
                 if new_fact:
-                    new_facts[new_fact] = Fact(f"TELL {new_fact} {weight}", self)
-                    print(f'New fact added during resolution: {new_fact} weight: {weight}')
-        return resolutions_found
+                    new_facts[new_fact] = Fact(f"TELL {new_fact} {weight}", self, True)
+              #      print(f'New fact added during resolution: {new_fact} weight: {weight}')
+        return resolutions_found, list(new_facts.values())
 # two modes mem, time second dict by literal
 # add second on tell for all the literals
 
@@ -312,20 +291,22 @@ class KnowledgeBase:
         return f'~{literal}' if Not not in literal else literal.replace('~', '')
 
     @staticmethod
-    def merge_expressions(expression1, literal, expression2):
+    def merge_expressions(expression1_literals: list, literal, expression2_literals: list):
+    #    print(f'Expression 1 {expression1_literals} Expression 2 {expression2_literals} - Joining literal negation: {literal} ')
         neg_literal = KnowledgeBase.negate(literal)
-        if literal not in expression1 or neg_literal not in expression2:
+    #    print(f'Negative literal: {neg_literal}')
+        if literal not in expression1_literals or neg_literal not in expression2_literals:
             return None
 
         # get literals that are not the ones we are removing
         # this may produce an empty list in one which is fine
         remaining = [
-            item for item in expression1 if item != literal
+            item for item in expression1_literals if item != literal
         ]
         remaining += [
-            item for item in expression2 if item != neg_literal
+            item for item in expression2_literals if item != neg_literal
         ]
-
+    #    print(f'Remaining literals: {remaining}')
         # Remove duplicate literals while preserving order.
         remaining = list(dict.fromkeys(remaining))
 
@@ -340,6 +321,7 @@ class KnowledgeBase:
 
     def tell(self, fact):
         if fact.Knowledge in self.Facts:
+            fact.print_error(f'Already in KB: {fact}')
             return
 
         self.Facts[fact.Knowledge] = fact
@@ -350,7 +332,7 @@ class KnowledgeBase:
             for literal in literals:
                 items = self.Literals.setdefault(literal, [])  # get existing list if exists or a blank one
                 if fact.Knowledge not in items:
-                    items.append(fact.Knowledge)  # not already in so add it to the list
+                    items.extend(fact.Knowledge)  # not already in so add it to the list
         print(f'ADDED: {fact}')
         # we need to infer and tell anything we can from this fact
         # if not fact.ground_truth():
@@ -408,6 +390,6 @@ class KnowledgeBase:
 
     def __str__(self):
         output = '======= KB Fact Dump =======\n\r'
-        for f in self.Facts:
+        for f in self.Facts.values():
             output += f'{f}\n\r'
         return output

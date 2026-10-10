@@ -17,9 +17,13 @@ def handle_statement(kbase, statement):
     do_resolution = act(kbase, fact)
     if do_resolution:
         # now we need to derive anything new starting at the beginning.
-        resolved = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+        resolved, new_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
         if resolved:
-            print(f'Performed resolution - new clauses found: {resolved}')
+            print(f'Performed resolution - new clauses found:')
+            for f in new_facts:
+                print(f'  {f}')
+            # new_facts dont exist in kb yet  and need to be resolved as well
+            kbase.insert_and_resolve_newfacts(new_facts)
 
 
 def act(kbase, fact):
@@ -43,13 +47,20 @@ def act(kbase, fact):
 stuff = ''
 kb = KnowledgeBase(Mode)
 reset = True
+statements = []
 test_file = open("samplefile.txt", "r")
 while stuff != 'DONE':
     if LOCAL_TESTING:
         stuff = test_file.readline().strip()
     else:
         stuff = client.next_statement(UnityId, Seed, reset=reset)
-    # print(f'Raw: {stuff}')
+    statements.append(stuff)
     reset = False
     handle_statement(kb, stuff)
+
+print('++++++ INCOMING STATEMENTS ++++++')
+for statement in statements:
+    print(statement)
+
+print('====== KNOWLEDGE BASE FACTS ======')
 print(kb)
