@@ -1,12 +1,13 @@
 import decimal
 import re
 
+Implies = '->'
+Or = '|'
+And = '&'
+Not = '~'
 
 class Fact:
-    Implies = '->'
-    Or = '|'
-    And = '&'
-    Not = '~'
+
     """
     • TELL <S> <W>
     • RETRACT <S>
@@ -27,7 +28,7 @@ class Fact:
         return self.Weight if re.fullmatch(r"[A-Z]", self.Knowledge) else 0.0
 
     def is_implication(self):
-        return self.Implies in self.Knowledge
+        return Implies in self.Knowledge
 
     def deconstructed_variables(self, kb):
         # tear apart the non ground truth values into pieces
@@ -36,7 +37,7 @@ class Fact:
         else:
             if self.is_implication():
                 # we have two () sets of truths or con/dis junctions
-                operands = [part.strip() for part in self.Knowledge.split(sep=self.Implies)]
+                operands = [part.strip() for part in self.Knowledge.split(sep=Implies)]
                 return_set = {}
                 for v in operands:
                     # return what we know from the KB, which could be a false, it could recursively seek to discover
@@ -52,57 +53,117 @@ class Fact:
         # distribute or over and
         cnf_knowledge = knowledge
 
-        if self.Implies in cnf_knowledge:
+        if Implies in cnf_knowledge:
             cnf_knowledge = self.elim_implications(cnf_knowledge)
-        if self.Not in cnf_knowledge:
+        if Not in cnf_knowledge:
             # if we had an implication then we will have 1 not we have to move in
             cnf_knowledge = self.move_not_in(cnf_knowledge)
-        if self.And in cnf_knowledge and self.Or in cnf_knowledge:
+        if And in cnf_knowledge and Or in cnf_knowledge:
             # special case, or over and, and over or
             print(f'SPECIAL case :{cnf_knowledge}')
-            andParts = cnf_knowledge.split(self.And, 1)
-            orParts = cnf_knowledge.split(self.Or, 1)
-            if any(self.Or in part for part in andParts):
-                for part in andParts:
-                    if self.Or not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
-                        continue
-                    # (A & (b | C)) something like this = (a & b) | (a & c)
 
-                    left, right = part.split(self.Or, 1)
-                    left = left.strip()
-                    right = right.strip()
-                    if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
-                        inside = right[1:-1]
-                        if self.And in inside:
-                            left = left
-                            b, c = inside.split(self.And, 1)
-                            cnf_knowledge = f"({left}{self.Or}{b.strip()}){self.And}({left}{self.Or}{c.strip()})"
-            elif any(self.And in part for part in orParts):
-                # (A | (b & c)) = (a | b) & (a | c) splits into two facts
-                for part in orParts:
-                    if self.And not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
-                        continue
-                    # (A & (b | C)) something like this = (a & b) | (a & c)
+            # Distribute OR over AND to produce CNF
+            # Handles: A | (B & C)
+            #      and: (A & B) | C
 
-                    left, right = part.split(self.And, 1)
-                    left = left.strip()
-                    right = right.strip()
-                    if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
-                        inside = right[1:-1]
-                        if self.Or in inside:
-                            left = left
-                            b, c = inside.split(self.And, 1)
-                            cnf_knowledge = f"({left}{self.And}{b.strip()}){self.Or}({left}{self.And}{c.strip()})"
-            else:
-                #failure
-                self.print_error('BROKEN Special case')
+            expr = self.clean_expression(cnf_knowledge)
 
-        elif self.And in cnf_knowledge and not self.operators_at_different_levels(cnf_knowledge):
+            # Find a top-level OR
+            depth = 0
+            or_index = -1
+
+            for i, char in enumerate(expr):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif char == Or and depth == 0:
+                    or_index = i
+                    break
+
+            if or_index != -1:
+                left = expr[:or_index].strip()
+                right = expr[or_index + 1:].strip()
+
+                # Case 1: A | (B & C)
+                if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
+                    inside = right[1:-1]
+
+                    if And in inside:
+                        b, c = inside.split(And, 1)
+                        cnf_knowledge = (
+                            f"({left}{Or}{b.strip()})"
+                            f"{And}"
+                            f"({left}{Or}{c.strip()})"
+                        )
+
+                # Case 2: (A & B) | C
+                elif left.startswith("(") and self.matching_parens(left, 0) == len(left) - 1:
+                    inside = left[1:-1]
+
+                    if And in inside:
+                        a, b = inside.split(And, 1)
+                        cnf_knowledge = (
+                            f"({a.strip()}{Or}{right})"
+                            f"{And}"
+                            f"({b.strip()}{Or}{right})"
+                        )
+
+            # will return one and add the other directly to the kb via tell clean outer ( ) first here
+            parts = self.clean_expression(cnf_knowledge).split(And)
+
+            # only want the variable
+            parts = [self.clean_expression(p) for p in parts]
+
+            # need to sneak add the extra literal here
+            for part in parts[1:]:
+                kbase.tell(Fact(f"TELL {part} {weight}", kbase))
+
+            # Return the first part
+            cnf_knowledge = parts[0]
+            # andParts = cnf_knowledge.split(And, 1)
+            # orParts = cnf_knowledge.split(Or, 1)
+            # if any(Or in part for part in andParts):
+            #     for part in andParts:
+            #         if Or not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
+            #             continue
+            #         # (A & (b | C)) something like this = (a & b) | (a & c)
+            #
+            #         left, right = part.split(Or, 1)
+            #         left = left.strip()
+            #         right = right.strip()
+            #         if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
+            #             inside = right[1:-1]
+            #             if And in inside:
+            #                 left = left
+            #                 b, c = inside.split(And, 1)
+            #                 cnf_knowledge = f"({left}{Or}{b.strip()}){And}({left}{Or}{c.strip()})"
+            # elif any(And in part for part in orParts):
+            #     # (A | (b & c)) = (a | b) & (a | c) splits into two facts
+            #     for part in orParts:
+            #         if And not in part or not self.operators_at_different_levels(part): # TODO need to solve for ~A | ~B & C should not run but ~A | (B & C) should
+            #             continue
+            #         # (A & (b | C)) something like this = (a & b) | (a & c)
+            #
+            #         left, right = part.split(And, 1)
+            #         left = left.strip()
+            #         right = right.strip()
+            #         if right.startswith("(") and self.matching_parens(right, 0) == len(right) - 1:
+            #             inside = right[1:-1]
+            #             if Or in inside:
+            #                 left = left
+            #                 b, c = inside.split(And, 1)
+            #                 cnf_knowledge = f"({left}{And}{b.strip()}){Or}({left}{And}{c.strip()})"
+            # else:
+            #     #failure
+            #     self.print_error('BROKEN Special case')
+
+        elif And in cnf_knowledge and not self.operators_at_different_levels(cnf_knowledge):
             # a & b or a & b & c & d..
             # a
             # b
             # will return one and add the other directly to the kb via tell clean outer ( ) first here
-            parts = self.clean_expression(cnf_knowledge).split(self.And)
+            parts = self.clean_expression(cnf_knowledge).split(And)
 
             # only want the variable
             parts = [self.clean_expression(p) for p in parts]
@@ -118,30 +179,30 @@ class Fact:
         return cnf_knowledge
 
     def elim_implications(self, knowledge):
-        left, right = knowledge.split(self.Implies)
+        left, right = knowledge.split(Implies)
         # not a V b in the form (V) -> (Z) where V could be (Y & A) or Z could be (O | L)
         # do step 1 and eliminate implications
-        return f"({self.Not}{left.strip()} {self.Or} {right.strip()})"  # add parens we will strip later
+        return f"({Not}{left.strip()} {Or} {right.strip()})"  # add parens we will strip later
 
     def move_not_in(self, knowledge):
         # print("START: Move NOT in:", knowledge)
         output = ''
         found_not = False
         for i, char in enumerate(knowledge):
-            if char == self.Not:
+            if char == Not:
                 if i + 1 < len(knowledge) and knowledge[i + 1] == "(":
                     end = self.matching_parens(knowledge, i + 1)
                     inside = knowledge[i + 2:end]
 
                     # we could have single literal, or conjunctions or disjunctions
-                    if self.And in inside or self.Or in inside:
+                    if And in inside or Or in inside:
                         # ands become ors ors become ands
                         new_inside = ''
-                        new_operator = self.Or if self.And in inside else self.And
+                        new_operator = Or if And in inside else And
                         for c in inside:
                             if c.isalpha():
-                                new_inside += self.Not + c
-                            elif c == self.And or c == self.Or:
+                                new_inside += Not + c
+                            elif c == And or c == Or:
                                 new_inside += new_operator
                             else:
                                 new_inside += c
@@ -151,7 +212,7 @@ class Fact:
                         break
                     else:
                         # just add the not
-                        output += self.Not
+                        output += Not
 
 
             else:
@@ -171,6 +232,9 @@ class Fact:
                 knowledge = knowledge[1:-1]
 
         return knowledge
+
+    def get_literals(self):
+        return re.findall(r'~?[A-Z]', self.Knowledge)
 
     @staticmethod
     def matching_parens(expression, start):
@@ -211,14 +275,82 @@ class Fact:
 
 
 class KnowledgeBase:
-    def __init__(self):
+    def __init__(self, mode: str):
         self.Facts = {}  # dictionary of facts known and derived, keyed on all known truths
+        self.Literals = {}  # potential dict used if in TIME mode to save lookup time
+        self.Mode = mode
+
+    def perform_resolution(self, clause, literals_to_resolve: list, weight: decimal):
+        resolutions_found = False
+        new_facts = {}
+        if len(self.Facts) <= 1:
+            return resolutions_found  # one fact nothing to resolve
+        # start with fact 1 and forward chain
+        # grab a literal and select all inverse facts
+        # IF you find something that negates a fact with only 1 inverse literal we have hit incompleteness
+
+        for literal in literals_to_resolve:
+            # find opposites
+            token = self.negate(literal)
+            print(f'Token to resolve: {token} for literal: {literal}')
+            # get the list of linked truths
+            # create a list we can use as we resolve this literal
+            facts_with_literal_opposite = self.Literals.get(token, [])
+            print(f'Facts that have token: {facts_with_literal_opposite}')
+            for fact in facts_with_literal_opposite:
+                # remove negated literal and dangling operator
+                new_fact = self.merge_expressions(clause, token, fact)
+                if new_fact:
+                    new_facts[new_fact] = Fact(f"TELL {new_fact} {weight}", self)
+                    print(f'New fact added during resolution: {new_fact} weight: {weight}')
+        return resolutions_found
+# two modes mem, time second dict by literal
+# add second on tell for all the literals
+
+    @staticmethod
+    def negate(literal):
+        return f'~{literal}' if Not not in literal else literal.replace('~', '')
+
+    @staticmethod
+    def merge_expressions(expression1, literal, expression2):
+        neg_literal = KnowledgeBase.negate(literal)
+        if literal not in expression1 or neg_literal not in expression2:
+            return None
+
+        # get literals that are not the ones we are removing
+        # this may produce an empty list in one which is fine
+        remaining = [
+            item for item in expression1 if item != literal
+        ]
+        remaining += [
+            item for item in expression2 if item != neg_literal
+        ]
+
+        # Remove duplicate literals while preserving order.
+        remaining = list(dict.fromkeys(remaining))
+
+        # throw away any A | ~A
+        if any(KnowledgeBase.negate(item) in remaining for item in remaining):
+            return None
+
+        #TODO is this ok to be empty here?
+        if len(remaining) == 0:
+            print('Empty')
+        return "|".join(remaining)
 
     def tell(self, fact):
         if fact.Knowledge in self.Facts:
             return
 
         self.Facts[fact.Knowledge] = fact
+
+        if self.Mode == 'TIME':
+            # build usable cross ref dictionary that links literals to facts that contain them
+            literals = fact.get_literals()
+            for literal in literals:
+                items = self.Literals.setdefault(literal, [])  # get existing list if exists or a blank one
+                if fact.Knowledge not in items:
+                    items.append(fact.Knowledge)  # not already in so add it to the list
         print(f'ADDED: {fact}')
         # we need to infer and tell anything we can from this fact
         # if not fact.ground_truth():
