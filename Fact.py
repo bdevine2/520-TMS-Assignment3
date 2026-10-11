@@ -21,6 +21,9 @@ class Fact:
         self.Weight = decimal.Decimal(parts[-1]) if self.Action == 'TELL' else 0.0
         if not already_cnf:
             self.Knowledge = self.convert_to_cnf(kbase)  # TODO need to keep ground truth? and in other facts spawned
+        """
+        Could be csv per entry
+        """
         self.Justifications = []  # parent keys that imply this truth
         self.Assumptions = []  # child keys implied by this
 
@@ -112,7 +115,7 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
-            resolved, n_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+            resolved, n_facts = kbase.perform_resolution(fact)
 
             if resolved:
                 newer_facts.extend(n_facts)
@@ -134,7 +137,7 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
-            resolved, n_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+            resolved, n_facts = kbase.perform_resolution(fact)
 
             if resolved:
                 newer_facts.extend(n_facts)
@@ -312,7 +315,7 @@ class Fact:
         print(f'\033[91m{error}\033[0m')
 
     def __str__(self):
-        return f"Action: {self.Action}, Knowledge: {self.Knowledge}{f", Weight: {self.Weight}" if self.Action == 'TELL' else ""}"
+        return f"Action: {self.Action}, Knowledge: {self.Knowledge}{f", Weight: {self.Weight}" if self.Action == 'TELL' else ""}, Assumptions: {self.Assumptions}, Justifications: {self.Justifications}"
 
 
 # TODO explain yourself in the __str__ How you were derived or why you exist
@@ -327,7 +330,7 @@ class KnowledgeBase:
     def insert_and_resolve_new_facts(self, new_facts):
         newer_facts = []
         for fact in new_facts:
-            resolved, n_facts = self.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+            resolved, n_facts = self.perform_resolution(fact)
             if resolved:
                 newer_facts.extend(n_facts)
 
@@ -337,7 +340,10 @@ class KnowledgeBase:
         if len(newer_facts) > 0:
             self.insert_and_resolve_new_facts(newer_facts)
 
-    def perform_resolution(self, clause, literals_to_resolve: list, weight: decimal):
+    def perform_resolution(self, fact):
+        clause = fact.Knowledge
+        literals_to_resolve = fact.get_literals()
+        weight = fact.Weight
         resolutions_found = False
         new_facts = {}
         if len(self.Facts) < 1:
@@ -348,17 +354,17 @@ class KnowledgeBase:
         for literal in literals_to_resolve:
             resolutions_found = True
             # find opposites
-            token = self.negate(literal)
+            negative_literal = self.negate(literal)
             # print(f'Token to resolve: {token} for literal: {literal}')
             # get the list of linked truths
             # create a list we can use as we resolve this literal
-            facts_with_literal_opposite = self.Literals.get(token, []) if self.Mode == "TIME" else []  # TODO if doing MEM ever
+            facts_with_literal_opposite = self.Literals.get(negative_literal, []) if self.Mode == "TIME" else []  # TODO if doing MEM ever
             #    print(f'Facts that have token: {facts_with_literal_opposite}')
-            for fact in facts_with_literal_opposite:
+            for fact_literals in facts_with_literal_opposite:
                 # weight for the newest object we are calling resolve with
                 # also passing its clause and literals in the clause to resolve against
 
-                fact_object = self.Facts.get(fact)
+                fact_object = self.Facts.get(fact_literals)
                 # fact_obj is the other fact we can resolve with since we have opposing literals
                 # 3 algorithms should be considered
                 # book: min/max
@@ -367,10 +373,14 @@ class KnowledgeBase:
                 #  If complex is the same as 1 do something where you weight how many records they are a part of
                 new_fact_weight = (fact_object.Weight + weight) / 2  # for now avg
 
-                new_fact = self.merge_expressions(re.findall(r'~?[A-Z]', clause), literal, re.findall(r'~?[A-Z]', fact))
+                new_fact = self.merge_expressions(re.findall(r'~?[A-Z]', clause), literal, re.findall(r'~?[A-Z]', fact_literals))
                 # print(f'New fact: {new_fact}')
                 if new_fact:
-                    new_facts[new_fact] = Fact(f"TELL {new_fact} {new_fact_weight}", self, True)
+                    new_fact_obj = Fact(f"TELL {new_fact} {new_fact_weight}", self, True)
+                    fact.Assumptions.append(new_fact)
+                    # justification for this are the two that were merged. If one is removed then this must also be retracted
+                    new_fact_obj.Justifications.append(f'{clause},{fact_literals}')
+                    new_facts[new_fact] = new_fact_obj
                     # print(f'New fact added during resolution: {new_fact} weight: {weight}')
         return resolutions_found, list(new_facts.values())
 # two modes mem, time second dict by literal
@@ -483,6 +493,7 @@ class KnowledgeBase:
         # todo this will split into sub retracts when cnf  is A & B and retract A and retract B
         existing_fact = self.Facts[fact.Knowledge]
         # only delete if there are NOT any other justifications
+        print(f'Existing justifications for this item: {existing_fact.Justifications}')
         if not any(k != fact.Knowledge for k in existing_fact.Justifications):
             if existing_fact:
                 print(f'Retracting fact for {fact.Knowledge} is {existing_fact}')

@@ -21,7 +21,7 @@ def handle_statement(kbase, new_statement):
 def act(kbase, fact):
     match fact.Action:
         case 'TELL':
-            resolved, new_facts = kbase.perform_resolution(fact.Knowledge, fact.get_literals(), fact.Weight)
+            resolved, new_facts = kbase.perform_resolution(fact)
             if resolved:
                 # print(f'Performed resolution - new clauses found:')
                 # for f in new_facts:
