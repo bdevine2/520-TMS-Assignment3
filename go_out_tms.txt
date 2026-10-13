@@ -11,6 +11,8 @@ ASK (B)
 ASK (G)
 RETRACT (A & C)
 ASK (B)
+TELL (A) 1
+ASK (B)
 TELL (C) 0.99
 ASK (B)
 ASK (G)

@@ -19,7 +19,7 @@ class Fact:
         self.Knowledge = " ".join(parts[1:-1] if self.Action == 'TELL' else parts[1:])
         self.Weight = float(parts[-1]) if self.Action == 'TELL' else 0.0
         if self.Action != 'RETRACT' and not already_cnf:
-            self.Knowledge = self.convert_to_cnf(kbase)  # TODO need to keep ground truth? and in other facts spawned
+            self.Knowledge = self.convert_to_cnf(kbase)
         """Could be csv per entry"""
         self.Justifications = []  # parent keys that imply this truth
         self.Assumptions = []  # child keys implied by this
@@ -31,22 +31,6 @@ class Fact:
 
     def is_implication(self):
         return Implies in self.Knowledge
-
-    def deconstructed_variables(self, kb):
-        # tear apart the non ground truth values into pieces
-        if self.ground_truth():
-            return {self.Knowledge: self.Weight}
-        else:
-            if self.is_implication():
-                # we have two () sets of truths or con/dis junctions
-                operands = [part.strip() for part in self.Knowledge.split(sep=Implies)]
-                return_set = {}
-                for v in operands:
-                    # return what we know from the KB, which could be a false, it could recursively seek to discover
-                    return_set[v] = max(kb.ask_string(v),self.Weight)# todo fix later to update truth
-                return return_set
-            else:  # must be a truth constant, con/dis junction of some sort
-                return {self.Knowledge: kb.ask_string(self.Knowledge)}
 
     def convert_to_cnf(self, kbase):
         # eliminate implications
@@ -324,6 +308,7 @@ class KnowledgeBase:
         self.Facts = {}  # dictionary of facts known and derived, keyed on all known truths
         self.Literals = {}  # potential dict used if in TIME mode to save lookup time
         self.Mode = mode
+        self.WeightFunction = 'Fuzzy'  # 'Fuzzy', 'Average', 'Decay'
 
     def insert_and_resolve_new_facts(self, new_facts):
         newer_facts = []
@@ -371,7 +356,7 @@ class KnowledgeBase:
                 # 3 algorithms should be considered
                 # book: min/max
                 # just because: avg
-                # complex based on fuzzy logic which will probably be just min for | TODO or is this the same as #1?
+                # reduce the weight by decay as resolution happens: .8 maybe?
                 #  If complex is the same as 1 do something where you weight how many records they are a part of
 
 
@@ -426,12 +411,16 @@ class KnowledgeBase:
         if any(KnowledgeBase.negate(item) in remaining for item in remaining):
             return None
 
-        #TODO is this ok to be empty here?
         if len(remaining) == 0:
             Fact.print_error('Empty')
         return "|".join(remaining)
 
     def tell(self, fact: Fact):
+        if self.Facts.get(fact.Knowledge):
+            current_fact = self.Facts.get(fact.Knowledge)
+            fact.Assumptions.extend(current_fact.Assumptions)
+            fact.Justifications.extend(current_fact.Justifications)
+
         self.Facts[fact.Knowledge] = fact
 
         if self.Mode == 'TIME':
@@ -444,7 +433,8 @@ class KnowledgeBase:
 
     def ask(self, fact: Fact):
         # print(f'ASK - {fact}')
-        return self.ask_string(fact.Knowledge)
+        weight = self.ask_string(fact.Knowledge)
+        return 'Founded' if weight >= .50 else 'Not Founded', weight
 
     @staticmethod
     def is_literal_only(check_string):
@@ -462,7 +452,6 @@ class KnowledgeBase:
     def ask_string(self, knowledge: str):
         #### if not directly found do a MAX for all that contain it because we are a conjunction of truths
         cnf_s = Fact.raw_cnf(knowledge)
-        #todo Ask could be complicated like ASK (A) -> (Q)
         #todo Need a because method that trails back and says where I came from, which could loop on collections of inferences
 
         # need to evaluate if I am in some OR I can deduce something if I do not have a direct weight!
@@ -483,31 +472,80 @@ class KnowledgeBase:
                     if lits:
                         values = []
                         for literal in lits:
-                            if self.Facts.get(literal):
+                            succeeded, weight = self.find_weight_for_clause(literal, know)
+                            if succeeded:  # find by pure value first
+                                values.append(weight)
+                            elif self.Facts.get(literal):  # fall back to direct clause lookup if it exists
                                 values.append(self.Facts[literal].Weight)
-                        #TODO define functions here
-                        return min(values)  # because its anded clauses so return min as value since we did not find ground truth
+                            else:
+                                values.append(self.ask_string(literal))  # this might never be a valid leg now
+                        return self.get_weight(values)  # because its anded clauses so return min as value since we did not find ground truth
                     elif not_know:
                         # try the NOT 1 - weight value for single literal
                         un_lits = self.Literals.get(know)
                         if un_lits:
                             values = []
                             for literal in un_lits:
-                                if self.Facts.get(literal):
+                                succeeded, weight = self.find_weight_for_clause(literal, know)
+                                if succeeded:  # find by pure value first
+                                    values.append(weight)
+                                elif self.Facts.get(literal):
                                     values.append(self.Facts[literal].Weight)
-                            # TODO define functions here
-                            return 1 - min(values)  # because its anded clauses so return min as value since we did not find ground truth
+                                else:
+                                    values.append(self.ask_string(literal))
+                            return 1 - self.get_weight(values)  # because its anded clauses so return min as value since we did not find ground truth
                 else:
-                    know_literals = self.get_literals(know)
-                    # maybe we can find some value for the pieces and max them because this should be a disjunction
-                    values = []
-                    for literal in know_literals:
-                        values.append(self.ask_string(literal))
+                    # know_literals = self.get_literals(know)
+                    # # maybe we can find some value for the pieces and max them because this should be a disjunction
+                    # values = []
+                    # for literal in know_literals:
+                    #     values.append(self.ask_string(literal))
+                    #
+                    # if len(values) > 0:
+                    #     return self.get_weight(values)
+                    # return 0.0  # for now cannot determine!
+                    succeeded, weight = self.find_weight_for_clause(know)
+                    if not succeeded:
+                        print(f'Failed to find weight for {know}')
+                    return weight
+    def find_weight_for_clause(self, clause, literal_to_ignore = None):
+        know_literals = self.get_literals(clause)
+        # only if we find original values for each literal will we use this
+        values = []
+        cnt = len(know_literals)
+        if literal_to_ignore:
+            cnt -= 1  # I will be skipping one value
+        for literal in know_literals:
+            if literal_to_ignore is not None and literal_to_ignore == literal:
+                continue  # skip this guy
+            if self.Facts.get(literal):
+                cnt += 1
+                f = self.Facts.get(literal)
+                values.append(f.Weight)
+            else:
+                n_literal = KnowledgeBase.negate(literal)
+                if self.Facts.get(n_literal):
+                    cnt += 1
+                    f = self.Facts.get(n_literal)
+                    values.append(1 - f.Weight)
+                else:
+                    return False, 0.0  # cannot determine missing ground truth
 
-                    if len(values) > 0:
-                        # TODO define functions here
-                        return min(values)
-                    return 0.0  # for now cannot determine!
+        if len(values) == cnt:
+            return True, self.get_weight(values)
+        return False, 0.0  # for now cannot determine!
+
+
+    def get_weight(self, values: list):
+        # TODO define functions here
+        if self.WeightFunction == 'Fuzzy':
+            return min(values)
+        elif self.WeightFunction == 'Fuzzy':
+            return max(values)
+        elif self.WeightFunction == 'Fuzzy':
+            return min(values)
+        else:
+            return min(values)
 
     def retract(self, clauses):
         # recursive? retracting can crawl around children to see if any retract, if none then return
@@ -515,16 +553,13 @@ class KnowledgeBase:
         # then keep recursively diving into affected children
 
         for cnf in clauses:
-            print(f'RETRACT - {cnf}')
-            # todo check if any OTHER parents exist that prevent this specific retraction from deleting
-            # todo this will split into sub retracts when cnf  is A & B and retract A and retract B
-            # TODO need to update weights after retract
+            # print(f'RETRACT - {cnf}')
             existing_fact = self.Facts[cnf]
             # only delete if there are NOT any other justifications
-            print(f'Existing justifications for this item: {existing_fact.Justifications}')
+            # print(f'Existing justifications for this item: {existing_fact.Justifications}')
             if not any(cnf in k.split(',') for k in existing_fact.Justifications):  # do we have any other justifications?
-                if existing_fact:
-                    print(f'Retracting fact for {cnf} is {existing_fact}')
+                # if existing_fact:
+                    # print(f'Retracting fact for {cnf} is {existing_fact}')
 
                 del self.Facts[cnf]
 
@@ -532,47 +567,14 @@ class KnowledgeBase:
                     # need to recalc w and ~w
                     not_literal = self.negate(cnf)
                     neg_clauses_to_evaluate = self.Literals.get(cnf, [])
-                    for neg_clause in neg_clauses_to_evaluate:
-                        # need to recalc w and ~w
-                        not_literal = self.negate(neg_clause)
                 else:
                     self.clean_literals(cnf)  # removes it from lists
                 # cascade retractions
-                for f in self.Facts.values():
-                    for j in f.Justifications:
-                        print(j)
-                        # self.retract([self.Facts[a].Knowledge])
+                for f in existing_fact.Assumptions:
+                    # print(f)
+                    self.retract([f])
             else:
                 print(f'{existing_fact} was not retracted because it was justified by {existing_fact.Justifications}')
-
-            #now find and update any weights to 0
-
-    def set_new_weight(self, new_weight, clause):
-        # need to determine how to update the weight based on the clause and what we know
-        if Or in clause:
-            # will be max of values
-            literals = self.get_literals(clause)
-        else:
-            #
-            x=2
-
-    '''This either gets ground truth or min of all clauses'''
-    def get_weight(self, literal):
-        # find exact if exists
-        if self.Facts.get(literal):
-            return self.Facts[literal].Weight  # DIRECTLY known
-        else:
-            # and everything and do min
-            if self.Literals.get(literal):
-                clauses = self.get_literals(literal)
-                w = float('inf')
-                for c in clauses:
-                    if self.Facts.get(c):
-                        w - min(c.Weight, w)
-
-                return w if w != float('inf') else 0.0
-            else:
-                return 0.0  # no knowledge of that fact, nor supporting facts
 
     def ensure_new(self, clause):
         # we are a conjunction of disjunctions so any order is fine

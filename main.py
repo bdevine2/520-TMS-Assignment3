@@ -34,7 +34,8 @@ def act(kbase, fact):
             x = 1  # stop
         case 'ASK':
             # print(kbase)
-            print(f'Response: {kbase.ask(fact)}')
+            results, weight = kbase.ask(fact)
+            print(f'{fact.Knowledge} is {results} with a weight of {weight}')
         case 'RETRACT':
             #print(kbase)
             cnf_parts = Fact.raw_cnf(fact.Knowledge)  # need cnf to work with but dont build in constructor
