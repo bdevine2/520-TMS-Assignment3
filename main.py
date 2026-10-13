@@ -21,7 +21,7 @@ def handle_statement(kbase, new_statement):
 def act(kbase, fact):
     match fact.Action:
         case 'TELL':
-            resolved, new_facts = kbase.perform_resolution(fact)
+            resolved, new_facts = kbase.perform_resolution(fact, None)
             if resolved:
                 # print(f'Performed resolution - new clauses found:')
                 # for f in new_facts:
@@ -30,11 +30,15 @@ def act(kbase, fact):
                 kbase.insert_and_resolve_new_facts(new_facts)
 
             kbase.tell(fact)
+            #print(kbase)
+            x = 1  # stop
         case 'ASK':
             # print(kbase)
             print(f'Response: {kbase.ask(fact)}')
         case 'RETRACT':
-            kbase.retract(fact)
+            #print(kbase)
+            cnf_parts = Fact.raw_cnf(fact.Knowledge)  # need cnf to work with but dont build in constructor
+            kbase.retract(cnf_parts)
         case 'DONE':
             # noop
             _ = 1
@@ -46,7 +50,7 @@ stuff = ''
 kb = KnowledgeBase(Mode)
 reset = True
 statements = []
-test_file = open("samplefile.txt", "r")
+test_file = open("go_out_tms.txt", "r")   # open("samplefile.txt", "r")
 while stuff != 'DONE':
     if LOCAL_TESTING:
         stuff = test_file.readline().strip()

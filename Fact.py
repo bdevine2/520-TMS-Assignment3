@@ -1,4 +1,3 @@
-import decimal
 import re
 
 Implies = '->'
@@ -13,19 +12,18 @@ class Fact:
     • RETRACT <S>
     • ASK <S>
     """
-    def __init__(self, statement, kbase, already_cnf=False):
+    def __init__(self, statement, kbase, already_cnf=False, derived=False):
         # First position action, last is weight if it has weight
         parts = [part.strip() for part in statement.split()]
         self.Action = parts[0]
         self.Knowledge = " ".join(parts[1:-1] if self.Action == 'TELL' else parts[1:])
-        self.Weight = decimal.Decimal(parts[-1]) if self.Action == 'TELL' else 0.0
-        if not already_cnf:
+        self.Weight = float(parts[-1]) if self.Action == 'TELL' else 0.0
+        if self.Action != 'RETRACT' and not already_cnf:
             self.Knowledge = self.convert_to_cnf(kbase)  # TODO need to keep ground truth? and in other facts spawned
-        """
-        Could be csv per entry
-        """
+        """Could be csv per entry"""
         self.Justifications = []  # parent keys that imply this truth
         self.Assumptions = []  # child keys implied by this
+        self.Derived = derived
 
     def ground_truth(self):
         # am I a truth value? ONLY 1 capitol letter means I am a truth so return my weight or 0 if I dont exist
@@ -115,7 +113,7 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
-            resolved, n_facts = kbase.perform_resolution(fact)
+            resolved, n_facts = kbase.perform_resolution(fact, [parts[1]])
 
             if resolved:
                 newer_facts.extend(n_facts)
@@ -137,7 +135,7 @@ class Fact:
             parts = [self.clean_expression(p) for p in parts]
 
             fact = Fact(f"TELL {parts[0]} {self.Weight}", kbase, True)
-            resolved, n_facts = kbase.perform_resolution(fact)
+            resolved, n_facts = kbase.perform_resolution(fact, [parts[1]])
 
             if resolved:
                 newer_facts.extend(n_facts)
@@ -330,17 +328,19 @@ class KnowledgeBase:
     def insert_and_resolve_new_facts(self, new_facts):
         newer_facts = []
         for fact in new_facts:
-            resolved, n_facts = self.perform_resolution(fact)
+            resolved, n_facts = self.perform_resolution(fact, [f.Knowledge for f in new_facts if f.Knowledge != fact.Knowledge])
+            #print(f'resolved {resolved} - new facts {n_facts}')
             if resolved:
-                newer_facts.extend(n_facts)
+                newer_facts = n_facts
 
             self.tell(fact)
-            # print(f'New fact {fact}')
+            if len(newer_facts) > 0:
+                self.insert_and_resolve_new_facts(newer_facts)
 
-        if len(newer_facts) > 0:
-            self.insert_and_resolve_new_facts(newer_facts)
 
-    def perform_resolution(self, fact):
+
+    def perform_resolution(self, fact: Fact, incoming_fact_strings: list):
+        #print(f'starting resolution {fact} - {incoming_fact_strings}')
         clause = fact.Knowledge
         literals_to_resolve = fact.get_literals()
         weight = fact.Weight
@@ -365,23 +365,35 @@ class KnowledgeBase:
                 # also passing its clause and literals in the clause to resolve against
 
                 fact_object = self.Facts.get(fact_literals)
+                if fact_object is None:
+                    z = 1
                 # fact_obj is the other fact we can resolve with since we have opposing literals
                 # 3 algorithms should be considered
                 # book: min/max
                 # just because: avg
                 # complex based on fuzzy logic which will probably be just min for | TODO or is this the same as #1?
                 #  If complex is the same as 1 do something where you weight how many records they are a part of
-                new_fact_weight = (fact_object.Weight + weight) / 2  # for now avg
+
 
                 new_fact = self.merge_expressions(re.findall(r'~?[A-Z]', clause), literal, re.findall(r'~?[A-Z]', fact_literals))
-                # print(f'New fact: {new_fact}')
-                if new_fact:
-                    new_fact_obj = Fact(f"TELL {new_fact} {new_fact_weight}", self, True)
-                    fact.Assumptions.append(new_fact)
-                    # justification for this are the two that were merged. If one is removed then this must also be retracted
-                    new_fact_obj.Justifications.append(f'{clause},{fact_literals}')
-                    new_facts[new_fact] = new_fact_obj
-                    # print(f'New fact added during resolution: {new_fact} weight: {weight}')
+                # print(f'Incoming facts: {incoming_fact_strings} - New Fact: {new_fact}')
+                if new_fact and (incoming_fact_strings is None or all(set(self.get_literals(new_fact)) != set(self.get_literals(clause)) for clause in incoming_fact_strings)):
+                    add = True
+                    for f in new_facts.values():
+                        existing_literals = self.get_literals(f.Knowledge)
+                        literals = self.get_literals(new_fact)
+                        if set(literals) == set(existing_literals):
+                            add = False
+                            print(f'Skipping - {literals} : {existing_literals}')
+                            break
+                    if add and self.ensure_new(new_fact):
+                        # ensure no existing combination of these variables exists
+                        new_fact_obj = Fact(f"TELL {new_fact} {weight}", self, True, derived=True)  # derived via resolution
+                        fact.Assumptions.append(new_fact)
+                        # justification for this are the two that were merged. If one is removed then this must also be retracted
+                        new_fact_obj.Justifications.append(f'{clause},{fact_literals}')
+                        new_facts[new_fact] = new_fact_obj
+                        # print(f'New fact added during resolution: {new_fact} weight: {weight}')
         return resolutions_found, list(new_facts.values())
 # two modes mem, time second dict by literal
 # add second on tell for all the literals
@@ -419,22 +431,18 @@ class KnowledgeBase:
             Fact.print_error('Empty')
         return "|".join(remaining)
 
-    def tell(self, fact):
-        if fact.Knowledge in self.Facts:
-            fact.print_error(f'Already in KB: {fact}')
-            return
-
+    def tell(self, fact: Fact):
         self.Facts[fact.Knowledge] = fact
 
         if self.Mode == 'TIME':
             # build usable cross ref dictionary that links literals to facts that contain them
             literals = fact.get_literals()
-            for literal in literals:
+            for literal in [literal for literal in literals if literal != fact.Knowledge]:
                 items = self.Literals.setdefault(literal, [])  # get existing list if exists or a blank one
                 if fact.Knowledge not in items:
                     items.append(fact.Knowledge)  # not already in so add it to the list
 
-    def ask(self, fact):
+    def ask(self, fact: Fact):
         # print(f'ASK - {fact}')
         return self.ask_string(fact.Knowledge)
 
@@ -442,7 +450,17 @@ class KnowledgeBase:
     def is_literal_only(check_string):
         return re.fullmatch(r"[A-Z]", check_string)
 
-    def ask_string(self, knowledge):
+    @staticmethod
+    def get_literals(clause):
+        return re.findall(r'~?[A-Z]', clause)
+
+    def clean_literals(self, deleting_cnf):
+        for literal_list in self.Literals.values():
+            if deleting_cnf in literal_list:
+                literal_list.remove(deleting_cnf)
+
+    def ask_string(self, knowledge: str):
+        #### if not directly found do a MAX for all that contain it because we are a conjunction of truths
         cnf_s = Fact.raw_cnf(knowledge)
         #todo Ask could be complicated like ASK (A) -> (Q)
         #todo Need a because method that trails back and says where I came from, which could loop on collections of inferences
@@ -460,14 +478,14 @@ class KnowledgeBase:
                 return 1 - self.Facts[not_know].Weight  # INDIRECTLY known
             else:
                 if not_know:
-                    # we are a literal
+                    # we are a literal so get everything that references us
                     lits = self.Literals.get(know)
                     if lits:
                         values = []
                         for literal in lits:
                             if self.Facts.get(literal):
                                 values.append(self.Facts[literal].Weight)
-
+                        #TODO define functions here
                         return min(values)  # because its anded clauses so return min as value since we did not find ground truth
                     elif not_know:
                         # try the NOT 1 - weight value for single literal
@@ -477,37 +495,93 @@ class KnowledgeBase:
                             for literal in un_lits:
                                 if self.Facts.get(literal):
                                     values.append(self.Facts[literal].Weight)
-
+                            # TODO define functions here
                             return 1 - min(values)  # because its anded clauses so return min as value since we did not find ground truth
                 else:
-                    # break it apart and use correct weight function to resolve
-                    # TODO weight function
+                    know_literals = self.get_literals(know)
+                    # maybe we can find some value for the pieces and max them because this should be a disjunction
+                    values = []
+                    for literal in know_literals:
+                        values.append(self.ask_string(literal))
+
+                    if len(values) > 0:
+                        # TODO define functions here
+                        return min(values)
                     return 0.0  # for now cannot determine!
 
-    def retract(self, fact):
+    def retract(self, clauses):
         # recursive? retracting can crawl around children to see if any retract, if none then return
         # can check parents to see if that was the only parent, if so you will be set retracted
         # then keep recursively diving into affected children
-        print(f'RETRACT - {fact.Knowledge}')
-        # todo check if any OTHER parents exist that prevent this specific retraction from deleting
-        # todo this will split into sub retracts when cnf  is A & B and retract A and retract B
-        existing_fact = self.Facts[fact.Knowledge]
-        # only delete if there are NOT any other justifications
-        print(f'Existing justifications for this item: {existing_fact.Justifications}')
-        if not any(k != fact.Knowledge for k in existing_fact.Justifications):
-            if existing_fact:
-                print(f'Retracting fact for {fact.Knowledge} is {existing_fact}')
 
-            del self.Facts[fact.Knowledge]
-            if self.is_literal_only(fact.Knowledge):
-                del self.Literals[fact.Knowledge]  # I am the core truth I must be removed and cascade uncertainty
+        for cnf in clauses:
+            print(f'RETRACT - {cnf}')
+            # todo check if any OTHER parents exist that prevent this specific retraction from deleting
+            # todo this will split into sub retracts when cnf  is A & B and retract A and retract B
+            # TODO need to update weights after retract
+            existing_fact = self.Facts[cnf]
+            # only delete if there are NOT any other justifications
+            print(f'Existing justifications for this item: {existing_fact.Justifications}')
+            if not any(cnf in k.split(',') for k in existing_fact.Justifications):  # do we have any other justifications?
+                if existing_fact:
+                    print(f'Retracting fact for {cnf} is {existing_fact}')
 
+                del self.Facts[cnf]
 
-            # cascade retractions
-            for a in existing_fact.Assumptions:
-                self.retract(self.Facts[a])
+                if KnowledgeBase.is_literal_only(cnf):
+                    # need to recalc w and ~w
+                    not_literal = self.negate(cnf)
+                    neg_clauses_to_evaluate = self.Literals.get(cnf, [])
+                    for neg_clause in neg_clauses_to_evaluate:
+                        # need to recalc w and ~w
+                        not_literal = self.negate(neg_clause)
+                else:
+                    self.clean_literals(cnf)  # removes it from lists
+                # cascade retractions
+                for f in self.Facts.values():
+                    for j in f.Justifications:
+                        print(j)
+                        # self.retract([self.Facts[a].Knowledge])
+            else:
+                print(f'{existing_fact} was not retracted because it was justified by {existing_fact.Justifications}')
+
+            #now find and update any weights to 0
+
+    def set_new_weight(self, new_weight, clause):
+        # need to determine how to update the weight based on the clause and what we know
+        if Or in clause:
+            # will be max of values
+            literals = self.get_literals(clause)
         else:
-            print(f'{existing_fact} was not retracted because it was justified by {existing_fact.Justifications}')
+            #
+            x=2
+
+    '''This either gets ground truth or min of all clauses'''
+    def get_weight(self, literal):
+        # find exact if exists
+        if self.Facts.get(literal):
+            return self.Facts[literal].Weight  # DIRECTLY known
+        else:
+            # and everything and do min
+            if self.Literals.get(literal):
+                clauses = self.get_literals(literal)
+                w = float('inf')
+                for c in clauses:
+                    if self.Facts.get(c):
+                        w - min(c.Weight, w)
+
+                return w if w != float('inf') else 0.0
+            else:
+                return 0.0  # no knowledge of that fact, nor supporting facts
+
+    def ensure_new(self, clause):
+        # we are a conjunction of disjunctions so any order is fine
+        literals = self.get_literals(clause)
+        for f in self.Facts:
+            existing_literals = self.get_literals(f)
+            if set(literals) == set(existing_literals):
+                return False
+        return True
 
     def anded(self, p, q):
         return min(p, q)

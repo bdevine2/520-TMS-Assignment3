@@ -1,0 +1,21 @@
+TELL (A & C) -> (B) 0.1
+TELL (D | E) -> (R) 0.1
+TELL (B & R) -> (G) 0.1
+ASK (B)
+ASK (R)
+ASK (G)
+TELL (A & C) 0.45
+ASK (B)
+TELL (A) 0.81
+ASK (B)
+ASK (G)
+RETRACT (A & C)
+ASK (B)
+TELL (C) 0.99
+ASK (B)
+ASK (G)
+ASK (R)
+TELL (D) 0.75
+ASK (R)
+ASK (G)
+DONE
