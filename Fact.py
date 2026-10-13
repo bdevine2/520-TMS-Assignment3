@@ -300,15 +300,12 @@ class Fact:
         return f"Action: {self.Action}, Knowledge: {self.Knowledge}{f", Weight: {self.Weight}" if self.Action == 'TELL' else ""}, Assumptions: {self.Assumptions}, Justifications: {self.Justifications}"
 
 
-# TODO explain yourself in the __str__ How you were derived or why you exist
-
-
 class KnowledgeBase:
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, weight_model: str):
         self.Facts = {}  # dictionary of facts known and derived, keyed on all known truths
         self.Literals = {}  # potential dict used if in TIME mode to save lookup time
         self.Mode = mode
-        self.WeightFunction = 'Fuzzy'  # 'Fuzzy', 'Average', 'Decay'
+        self.WeightFunction = weight_model # 'Fuzzy', 'Average', 'Decay'
 
     def insert_and_resolve_new_facts(self, new_facts):
         newer_facts = []
@@ -321,8 +318,6 @@ class KnowledgeBase:
             self.tell(fact)
             if len(newer_facts) > 0:
                 self.insert_and_resolve_new_facts(newer_facts)
-
-
 
     def perform_resolution(self, fact: Fact, incoming_fact_strings: list):
         #print(f'starting resolution {fact} - {incoming_fact_strings}')
@@ -450,21 +445,22 @@ class KnowledgeBase:
                 literal_list.remove(deleting_cnf)
 
     def ask_string(self, knowledge: str):
-        #### if not directly found do a MAX for all that contain it because we are a conjunction of truths
         cnf_s = Fact.raw_cnf(knowledge)
         #todo Need a because method that trails back and says where I came from, which could loop on collections of inferences
 
         # need to evaluate if I am in some OR I can deduce something if I do not have a direct weight!
         # if there are more than one clause then self.anded
+        final_values = []
+        ground_truths = True
         for know in cnf_s:
             not_know = None
             if self.is_literal_only(know):
                 # this is a single literal checking inverse is simple
                 not_know = KnowledgeBase.negate(know)
             if self.Facts.get(know):
-                return self.Facts[know].Weight  # DIRECTLY known
+                final_values.append(self.Facts[know].Weight)  # DIRECTLY known
             elif not_know and self.Facts.get(not_know):
-                return 1 - self.Facts[not_know].Weight  # INDIRECTLY known
+                final_values.append(1 - self.Facts[not_know].Weight)  # INDIRECTLY known
             else:
                 if not_know:
                     # we are a literal so get everything that references us
@@ -479,7 +475,7 @@ class KnowledgeBase:
                                 values.append(self.Facts[literal].Weight)
                             else:
                                 values.append(self.ask_string(literal))  # this might never be a valid leg now
-                        return self.get_weight(values)  # because its anded clauses so return min as value since we did not find ground truth
+                        final_values.append(self.get_weight(values, And, False))  # because its anded clauses so return min as value since we did not find ground truth
                     elif not_know:
                         # try the NOT 1 - weight value for single literal
                         un_lits = self.Literals.get(know)
@@ -493,26 +489,22 @@ class KnowledgeBase:
                                     values.append(self.Facts[literal].Weight)
                                 else:
                                     values.append(self.ask_string(literal))
-                            return 1 - self.get_weight(values)  # because its anded clauses so return min as value since we did not find ground truth
+                            final_values.append(1 - self.get_weight(values, And, False))  # because its anded clauses so return min as value since we did not find ground truth
+                        final_values.append(0.0)  # could not determine
                 else:
-                    # know_literals = self.get_literals(know)
-                    # # maybe we can find some value for the pieces and max them because this should be a disjunction
-                    # values = []
-                    # for literal in know_literals:
-                    #     values.append(self.ask_string(literal))
-                    #
-                    # if len(values) > 0:
-                    #     return self.get_weight(values)
-                    # return 0.0  # for now cannot determine!
-                    succeeded, weight = self.find_weight_for_clause(know)
+                    ground_truths &= False
+                    succeeded, weight = self.find_weight_for_clause(know, Or)
                     if not succeeded:
                         print(f'Failed to find weight for {know}')
-                    return weight
-    def find_weight_for_clause(self, clause, literal_to_ignore = None):
+                    final_values.append(weight)
+        # finished for these would have been conjunctions so should be min here but I will use the weight function
+        return self.get_weight(final_values, And, ground_truths)
+
+    def find_weight_for_clause(self, clause, operator, literal_to_ignore=None):
         know_literals = self.get_literals(clause)
         # only if we find original values for each literal will we use this
         values = []
-        cnt = len(know_literals)
+        cnt = 0
         if literal_to_ignore:
             cnt -= 1  # I will be skipping one value
         for literal in know_literals:
@@ -529,21 +521,37 @@ class KnowledgeBase:
                     f = self.Facts.get(n_literal)
                     values.append(1 - f.Weight)
                 else:
-                    return False, 0.0  # cannot determine missing ground truth
+                    cnt += 1
+                    # ok find the first listed clause that includes this literal and use it
+                    clause_to_lookup = None
+                    literal_list = []
+                    if self.Literals.get(literal):
+                        literal_list = self.Literals.get(literal)
+                    elif self.Literals.get(n_literal):
+                        literal_list = self.Literals.get(n_literal)
+
+                    if len(literal_list) > 0:
+                        clause_to_lookup = literal_list[0]
+
+                    if clause_to_lookup and self.Facts.get(clause_to_lookup):
+                        fact_for_weight = self.Facts.get(clause_to_lookup)
+                        values.append(fact_for_weight.Weight)
+                    else:
+                        values.append(0.0)  # cannot determine missing ground truth
 
         if len(values) == cnt:
-            return True, self.get_weight(values)
+            return True, self.get_weight(values, operator, True)
         return False, 0.0  # for now cannot determine!
 
 
-    def get_weight(self, values: list):
-        # TODO define functions here
+    def get_weight(self, values: list, operator, ground_truths):
+        # the third method can use the weight any non ground truth loses .1 per layer?
         if self.WeightFunction == 'Fuzzy':
-            return min(values)
-        elif self.WeightFunction == 'Fuzzy':
-            return max(values)
-        elif self.WeightFunction == 'Fuzzy':
-            return min(values)
+            return min(values) if operator == And else max(values)
+        elif self.WeightFunction == 'Average':
+            return sum(values) / len(values) if len(values) else 0
+        elif self.WeightFunction == 'Decay':
+            return (sum(values) / len(values) if len(values) else 0) * (1 if ground_truths else 0.9)  # decay anything not derived from single literals
         else:
             return min(values)
 

@@ -1,6 +1,11 @@
+#!/usr/bin/env python3
+
 import client
 from Fact import KnowledgeBase, Fact
-LOCAL_TESTING = True
+import argparse
+
+
+LOCAL_TESTING = False
 UnityId = 'bdevine2'
 Seed = 'ThETruTHISouTtHERe'
 # MEMORY is other and it is declaring what you want to SAVE.
@@ -47,23 +52,33 @@ def act(kbase, fact):
             print(f'Invalid action: {fact.Action}')
 
 
-stuff = ''
-kb = KnowledgeBase(Mode)
-reset = True
-statements = []
-test_file = open("go_out_tms.txt", "r")   # open("samplefile.txt", "r")
-while stuff != 'DONE':
-    if LOCAL_TESTING:
-        stuff = test_file.readline().strip()
-    else:
-        stuff = client.next_statement(UnityId, Seed, reset=reset)
-    statements.append(stuff)
-    reset = False
-    handle_statement(kb, stuff)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("Model", nargs="?", default="Fuzzy")  # weight model
+    parser.add_argument("Local", nargs="?", default=LOCAL_TESTING)  # local file or online
+    parser.add_argument("Mode", nargs="?", default=Mode)  # TIME or MEM
+    args = parser.parse_args()
+    stuff = ''
+    kb = KnowledgeBase(args.Mode, args.Mode)
+    reset = True
+    statements = []
+    test_file = open("go_out_tms.txt", "r")   # open("samplefile.txt", "r")
+    while stuff != 'DONE':
+        if args.Local:
+            stuff = test_file.readline().strip()
+        else:
+            stuff = client.next_statement(UnityId, Seed, reset=reset)
+        statements.append(stuff)
+        reset = False
+        handle_statement(kb, stuff)
 
-print('++++++ INCOMING STATEMENTS ++++++')
-for statement in statements:
-    print(statement)
+    print('++++++ INCOMING STATEMENTS ++++++')
+    for statement in statements:
+        print(statement)
 
-print('====== KNOWLEDGE BASE FACTS ======')
-print(kb)
+    print('====== KNOWLEDGE BASE FACTS ======')
+    print(kb)
+
+
+if __name__ == "__main__":
+    main()
