@@ -18,7 +18,7 @@ class Fact:
         self.Action = parts[0]
         self.Knowledge = " ".join(parts[1:-1] if self.Action == 'TELL' else parts[1:])
         self.Weight = float(parts[-1]) if self.Action == 'TELL' else 0.0
-        if self.Action != 'RETRACT' and not already_cnf:
+        if self.Action != 'RETRACT' and self.Action != 'ASK' and not already_cnf:
             self.Knowledge = self.convert_to_cnf(kbase)
         """Could be csv per entry"""
         self.Justifications = []  # parent keys that imply this truth
@@ -451,6 +451,7 @@ class KnowledgeBase:
         # need to evaluate if I am in some OR I can deduce something if I do not have a direct weight!
         # if there are more than one clause then self.anded
         final_values = []
+        whole_story = []
         ground_truths = True
         for know in cnf_s:
             not_know = None
@@ -459,8 +460,10 @@ class KnowledgeBase:
                 not_know = KnowledgeBase.negate(know)
             if self.Facts.get(know):
                 final_values.append(self.Facts[know].Weight)  # DIRECTLY known
+                whole_story.append(f'Added the weight of {self.Facts[know].Weight} from direct literal value: {know}')
             elif not_know and self.Facts.get(not_know):
                 final_values.append(1 - self.Facts[not_know].Weight)  # INDIRECTLY known
+                whole_story.append(f'Added the weight of {1 - self.Facts[not_know].Weight} from 1 - direct Negative literal value: {not_know}')
             else:
                 if not_know:
                     # we are a literal so get everything that references us
@@ -468,7 +471,8 @@ class KnowledgeBase:
                     if lits:
                         values = []
                         for literal in lits:
-                            succeeded, weight = self.find_weight_for_clause(literal, know)
+                            succeeded, weight, story = self.find_weight_for_clause(literal, know)
+                            whole_story.extend(story)
                             if succeeded:  # find by pure value first
                                 values.append(weight)
                             elif self.Facts.get(literal):  # fall back to direct clause lookup if it exists
@@ -482,7 +486,8 @@ class KnowledgeBase:
                         if un_lits:
                             values = []
                             for literal in un_lits:
-                                succeeded, weight = self.find_weight_for_clause(literal, know)
+                                succeeded, weight, story = self.find_weight_for_clause(literal, know)
+                                whole_story.extend(story)
                                 if succeeded:  # find by pure value first
                                     values.append(weight)
                                 elif self.Facts.get(literal):
@@ -493,14 +498,18 @@ class KnowledgeBase:
                         final_values.append(0.0)  # could not determine
                 else:
                     ground_truths &= False
-                    succeeded, weight = self.find_weight_for_clause(know, Or)
+                    succeeded, weight, story = self.find_weight_for_clause(know, Or)
+                    whole_story.extend(story)
                     if not succeeded:
                         print(f'Failed to find weight for {know}')
                     final_values.append(weight)
         # finished for these would have been conjunctions so should be min here but I will use the weight function
+        print(f'Justification for value using {self.WeightFunction} weight function')
+        print(whole_story)
         return self.get_weight(final_values, And, ground_truths)
 
     def find_weight_for_clause(self, clause, operator, literal_to_ignore=None):
+        story = []
         know_literals = self.get_literals(clause)
         # only if we find original values for each literal will we use this
         values = []
@@ -514,12 +523,14 @@ class KnowledgeBase:
                 cnt += 1
                 f = self.Facts.get(literal)
                 values.append(f.Weight)
+                story.append(f'Added the weight of {f.Weight} from direct literal value: {literal}')
             else:
                 n_literal = KnowledgeBase.negate(literal)
                 if self.Facts.get(n_literal):
                     cnt += 1
                     f = self.Facts.get(n_literal)
                     values.append(1 - f.Weight)
+                    story.append(f'Added the weight of {1 - f.Weight} from 1 - direct Negative literal value: {n_literal}')
                 else:
                     cnt += 1
                     # ok find the first listed clause that includes this literal and use it
@@ -535,14 +546,17 @@ class KnowledgeBase:
 
                     if clause_to_lookup and self.Facts.get(clause_to_lookup):
                         fact_for_weight = self.Facts.get(clause_to_lookup)
+                        story.append(f'Added the weight of {fact_for_weight.Weight} from indirect clause: {clause_to_lookup}')
                         values.append(fact_for_weight.Weight)
+                        if clause_to_lookup == clause:
+                            # I have completely already looked myself up in literals and got my truth
+                            return True, self.get_weight(values, operator, True), story
                     else:
                         values.append(0.0)  # cannot determine missing ground truth
 
         if len(values) == cnt:
-            return True, self.get_weight(values, operator, True)
-        return False, 0.0  # for now cannot determine!
-
+            return True, self.get_weight(values, operator, True), story
+        return False, 0.0, story  # for now cannot determine!
 
     def get_weight(self, values: list, operator, ground_truths):
         # the third method can use the weight any non ground truth loses .1 per layer?
